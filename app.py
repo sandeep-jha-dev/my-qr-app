@@ -3,7 +3,7 @@ import qrcode
 from io import BytesIO
 import tempfile
 import os
-import base64
+import requests
 
 # Try to import the pdf_to_link converter
 try:
@@ -25,27 +25,44 @@ st.set_page_config(page_title="QR Generator", layout="wide")
 st.title("🔗 Quick QR Code Generator")
 st.write("Generate QR codes from URLs, text, or PDF files!")
 
-# Initialize session state for settings
-if "hosting_method" not in st.session_state:
-    st.session_state.hosting_method = "s3" if S3_AVAILABLE else "data-url"
+# Check for available methods
+secrets_s3_available = False
+try:
+    if "aws_access_key_id" in st.secrets and "aws_secret_access_key" in st.secrets and "s3_bucket" in st.secrets:
+        secrets_s3_available = True
+except:
+    pass
 
 # Sidebar for configuration
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
     
+    if secrets_s3_available and S3_AVAILABLE:
+        default_method = "S3 (Secrets)"
+        methods = ["S3 (Secrets)", "file.io", "Public Hosts"]
+    else:
+        default_method = "file.io"
+        methods = ["file.io", "Public Hosts"]
+        if S3_AVAILABLE:
+            methods.insert(0, "S3 (Manual)")
+    
     hosting_method = st.radio(
         "PDF Hosting Method:",
-        ("S3 / DigitalOcean Spaces", "Base64 Data URL", "Public Hosts"),
+        methods,
         help="Choose how to host uploaded PDFs for QR generation"
     )
     
-    if hosting_method == "S3 / DigitalOcean Spaces":
+    if hosting_method == "S3 (Manual)":
         st.markdown("**S3/Spaces Credentials**")
         access_key = st.text_input("Access Key", type="password", key="s3_access")
         secret_key = st.text_input("Secret Key", type="password", key="s3_secret")
         bucket = st.text_input("Bucket Name", key="s3_bucket")
         region = st.text_input("Region (optional)", key="s3_region", placeholder="us-east-1")
         endpoint = st.text_input("Endpoint (optional)", key="s3_endpoint", placeholder="https://nyc3.digitaloceanspaces.com")
+    elif hosting_method == "S3 (Secrets)":
+        st.markdown("✅ **Using S3 credentials from Streamlit Secrets**")
+        st.info("Credentials loaded securely from your deployment settings.")
+        access_key = secret_key = bucket = region = endpoint = None
     else:
         access_key = secret_key = bucket = region = endpoint = None
 
@@ -79,6 +96,21 @@ def upload_to_s3(file_bytes, filename, access_key, secret_key, bucket, region=No
         return url
     except Exception as e:
         raise RuntimeError(f"S3 upload failed: {e}")
+
+# Function to upload to file.io
+def upload_to_fileio(file_bytes, filename):
+    """Upload file to file.io and return shareable link."""
+    try:
+        files = {"file": (filename, file_bytes)}
+        resp = requests.post("https://file.io", files=files, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("success"):
+            return data["link"]
+        else:
+            raise RuntimeError(f"file.io error: {data.get('status')}")
+    except Exception as e:
+        raise RuntimeError(f"file.io upload failed: {e}")
 
 # Function to generate and display QR code
 def generate_and_display_qr(data: str, filename: str = "qrcode.png"):
@@ -125,8 +157,36 @@ elif pdf_input:
     file_size_mb = pdf_input.size / (1024 * 1024)
     st.info(f"📦 File: {pdf_input.name} ({file_size_mb:.2f} MB)")
     
-    # METHOD 1: S3/DigitalOcean Spaces
-    if hosting_method == "S3 / DigitalOcean Spaces":
+    # METHOD 1: S3 with Secrets
+    if hosting_method == "S3 (Secrets)":
+        if not S3_AVAILABLE:
+            st.error("❌ boto3 not installed on deployment. Contact support.")
+        else:
+            try:
+                with st.spinner("⏳ Uploading PDF to S3..."):
+                    file_bytes = pdf_input.getbuffer()
+                    link = upload_to_s3(
+                        file_bytes,
+                        pdf_input.name,
+                        st.secrets["aws_access_key_id"],
+                        st.secrets["aws_secret_access_key"],
+                        st.secrets["s3_bucket"],
+                        region=st.secrets.get("aws_region"),
+                        endpoint=st.secrets.get("s3_endpoint")
+                    )
+                
+                st.success("✅ PDF uploaded to S3!")
+                st.write(f"**Shareable Link:** {link}")
+                st.code(link, language="plaintext")
+                
+                st.markdown("### Generated QR Code")
+                generate_and_display_qr(link, filename=f"{pdf_input.name}.qr.png")
+                
+            except Exception as e:
+                st.error(f"❌ Error uploading to S3: {str(e)}")
+    
+    # METHOD 2: S3 Manual (manual credentials)
+    elif hosting_method == "S3 (Manual)":
         if not S3_AVAILABLE:
             st.error("❌ boto3 not installed. Install with: pip install boto3")
         elif not all([access_key, secret_key, bucket]):
@@ -155,27 +215,25 @@ elif pdf_input:
             except Exception as e:
                 st.error(f"❌ Error uploading to S3: {str(e)}")
     
-    # METHOD 2: Base64 Data URL
-    elif hosting_method == "Base64 Data URL":
+    # METHOD 3: file.io (no auth needed) - RECOMMENDED FOR DEPLOYMENT
+    elif hosting_method == "file.io":
         try:
-            with st.spinner("⏳ Generating QR from PDF..."):
+            with st.spinner("⏳ Uploading PDF to file.io..."):
                 file_bytes = pdf_input.getbuffer()
-                # Encode PDF as base64
-                b64 = base64.b64encode(file_bytes).decode()
-                data_url = f"data:application/pdf;base64,{b64[:100]}..."  # Show truncated for UI
-                
-                st.success("✅ QR generated from PDF!")
-                st.info("Note: QR contains the entire PDF as base64-encoded data. This works for small PDFs (< 2 MB).")
-                
-                # Generate QR for full data URL
-                full_data_url = f"data:application/pdf;base64,{b64}"
-                st.markdown("### Generated QR Code")
-                generate_and_display_qr(full_data_url, filename=f"{pdf_input.name}.qr.png")
-                
+                link = upload_to_fileio(file_bytes, pdf_input.name)
+            
+            st.success("✅ PDF uploaded to file.io!")
+            st.write(f"**Shareable Link:** {link}")
+            st.code(link, language="plaintext")
+            st.caption("ℹ️ Link expires after first download or 14 days, whichever comes first")
+            
+            st.markdown("### Generated QR Code")
+            generate_and_display_qr(link, filename=f"{pdf_input.name}.qr.png")
+            
         except Exception as e:
-            st.error(f"❌ Error generating QR: {str(e)}")
+            st.error(f"❌ file.io upload failed: {str(e)}")
     
-    # METHOD 3: Public Hosts (transfer.sh, etc.)
+    # METHOD 4: Public Hosts (transfer.sh, etc.)
     else:
         if not PDF_CONVERTER_AVAILABLE:
             st.error("❌ PDF converter not available. Please ensure pdf_to_link.py is in the same directory.")
