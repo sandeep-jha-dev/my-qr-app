@@ -62,7 +62,22 @@ if uploaded_file is not None:
         st.info("File too large to embed directly into a QR code.")
         st.write("Options: upload to a temporary host to get a shareable link and encode that link in the QR.")
 
-        if st.button("Upload to get shareable link (0x0.st)"):
+        col1, col2 = st.columns(2)
+        if col1.button("Upload to transfer.sh (recommended)"):
+            with st.spinner("Uploading to transfer.sh..."):
+                try:
+                    # transfer.sh accepts PUT to /<filename>
+                    upload_url = f"https://transfer.sh/{uploaded_file.name}"
+                    resp = requests.put(upload_url, data=file_bytes)
+                    resp.raise_for_status()
+                    link = resp.text.strip()
+                    st.success("Uploaded — shareable link below")
+                    st.write(link)
+                    make_qr_and_buttons(link, download_name=f"{uploaded_file.name}.link_qr.png")
+                except Exception as e:
+                    st.error(f"transfer.sh upload failed: {e}")
+
+        if col2.button("Upload to 0x0.st (fallback)"):
             with st.spinner("Uploading to 0x0.st..."):
                 try:
                     resp = requests.post("https://0x0.st", files={"file": (uploaded_file.name, file_bytes)})
@@ -72,4 +87,4 @@ if uploaded_file is not None:
                     st.write(link)
                     make_qr_and_buttons(link, download_name=f"{uploaded_file.name}.link_qr.png")
                 except Exception as e:
-                    st.error(f"Upload failed: {e}")
+                    st.error(f"0x0.st upload failed: {e}")
