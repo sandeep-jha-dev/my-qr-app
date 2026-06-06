@@ -1,5 +1,6 @@
 import streamlit as st
 import qrcode
+from io import BytesIO
 
 # Sets up the webpage tab title
 st.set_page_config(page_title="QR Generator")
@@ -16,3 +17,16 @@ if url:
     
     # Display it directly on the website
     st.image(qr_img.get_image(), caption="Here is your QR Code!")
+    
+    # Convert image to bytes for download
+    img_bytes = BytesIO()
+    qr_img.save(img_bytes, format="PNG")
+    img_bytes.seek(0)
+    
+    # Add download button
+    st.download_button(
+        label="📥 Download QR Code",
+        data=img_bytes,
+        file_name="qrcode.png",
+        mime="image/png"
+    )
