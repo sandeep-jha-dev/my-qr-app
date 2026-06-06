@@ -28,21 +28,44 @@ def generate_qr_image_bytes(data: str) -> BytesIO:
 
 
 def upload_file_to_host(file_bytes: bytes, filename: str) -> str:
-    """Try transfer.sh first, then fallback to 0x0.st. Returns the public link or raises."""
-    # Try transfer.sh (PUT)
+    """Try multiple public hosts in order until one returns a link.
+
+    Order: transfer.sh (PUT) -> anonfiles (API) -> 0x0.st (POST).
+    Raises RuntimeError with combined errors if all attempts fail.
+    """
+    errors = []
+
+    # transfer.sh (PUT)
     try:
         upload_url = f"https://transfer.sh/{filename}"
         resp = requests.put(upload_url, data=file_bytes, timeout=60)
         resp.raise_for_status()
         return resp.text.strip()
-    except Exception:
-        # Fallback to 0x0.st (POST)
-        try:
-            resp = requests.post("https://0x0.st", files={"file": (filename, file_bytes)}, timeout=60)
-            resp.raise_for_status()
-            return resp.text.strip()
-        except Exception as e:
-            raise RuntimeError(f"Upload failed: {e}")
+    except Exception as e:
+        errors.append(f"transfer.sh: {e}")
+
+    # anonfiles (POST JSON response)
+    try:
+        resp = requests.post("https://api.anonfiles.com/upload", files={"file": (filename, file_bytes)}, timeout=60)
+        resp.raise_for_status()
+        j = resp.json()
+        if j.get("status") and j.get("data") and j["data"].get("file"):
+            link = j["data"]["file"]["url"]["full"]
+            return link
+        else:
+            errors.append(f"anonfiles: unexpected response {j}")
+    except Exception as e:
+        errors.append(f"anonfiles: {e}")
+
+    # 0x0.st (POST)
+    try:
+        resp = requests.post("https://0x0.st", files={"file": (filename, file_bytes)}, timeout=60)
+        resp.raise_for_status()
+        return resp.text.strip()
+    except Exception as e:
+        errors.append(f"0x0.st: {e}")
+
+    raise RuntimeError("All upload attempts failed: " + " | ".join(errors))
 
 
 if uploaded_file is not None:
