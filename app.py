@@ -25,7 +25,7 @@ if url:
     
     # Add download button
     st.download_button(
-        label="📥 Download QR Code",
+        label="Download QR Code",
         data=img_bytes,
         file_name="qrcode.png",
         mime="image/png"
